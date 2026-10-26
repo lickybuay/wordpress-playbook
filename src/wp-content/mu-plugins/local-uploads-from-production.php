@@ -1,6 +1,11 @@
 <?php
 /**
  * Plugin Name: Local only - uploads from production
+ *
+ * OPTIONAL. Keep it if you don't copy the uploads folder to your machine; delete
+ * this file if you do. Before using it, set MYSITE_LOCAL_HOST and
+ * MYSITE_PRODUCTION_ORIGIN below to your local host and production URL.
+ *
  * Description: On a local copy (WP_ENVIRONMENT_TYPE=local) served as
  *              mysite.test, a request for a file under the uploads folder that
  *              is not on disk is redirected to the same file on production, so

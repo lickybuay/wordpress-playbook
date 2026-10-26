@@ -31,7 +31,7 @@ The first readable file wins:
 
 ### What the file does after loading
 
-- **Unsets the parsed array** (and the helper variables) before WordPress loads, so a plugin cannot read your SMTP password out of the global scope. This is hygiene, not a boundary: `DB_PASSWORD` and the SMTP constants stay defined, and any code that runs in the request can read constants. The real protections are the file permissions and keeping untrusted code out of the site.
+- **Unsets the parsed array** (and the helper variables) before WordPress loads, so a plugin cannot read a password out of the global scope. This is hygiene, not a boundary: `DB_PASSWORD` and the other constants stay defined, and any code that runs in the request can read constants. The real protections are the file permissions and keeping untrusted code out of the site.
 - **Parses its own file format.** It does not call `putenv()` or fill `$_ENV`, so nothing leaks to child processes or `phpinfo()`. The format splits on the first `=` and does not treat `#` as a comment inside a value, because salts legitimately contain `#`, `'`, `"`, `$` and `=`.
 
 ### Environment type
@@ -47,17 +47,11 @@ Only a local copy declares itself. **Production keeps WordPress' default, `produ
 
 Locally it also turns on `WP_DEBUG` and `WP_DEBUG_LOG` and keeps `WP_DEBUG_DISPLAY` off: errors go to `wp-content/debug.log`, not into the HTML, so layout and AJAX responses stay intact.
 
-### Outgoing mail
+### Outgoing mail (optional)
 
-WordPress sends mail with PHP's `mail()` unless told otherwise. On a modern domain that mail is often rejected or lands in spam, for this reason:
+Outgoing mail is your call, and the starter ships no SMTP plugin. If you add one, keep its credentials in the `.env` or in server-defined constants rather than in the database (most SMTP plugins accept constants), so they are not editable from the dashboard and not copied around in database dumps.
 
-- **SPF** lists the servers allowed to send mail for your domain. **DKIM** is a signature added by the sending server. **DMARC** tells receiving servers what to do when a message claims to be from your domain but fails SPF or DKIM: nothing, quarantine, or reject.
-- A web server calling `mail()` with `From: info@example.org` is almost never in the domain's SPF record and does not sign with DKIM. Gmail, Microsoft and others then bounce it or send it to spam, and with a strict DMARC policy they reject it outright.
-- The fix is to send through a server that **is** authorized for the domain: the mail provider that already hosts the domain's mailboxes, over authenticated SMTP.
-
-The file maps `SMTP_*` keys from the `.env` to the constants of the [WP Mail SMTP](https://wordpress.org/plugins/wp-mail-smtp/) plugin (`WPMS_ON`, `WPMS_SMTP_HOST`, `WPMS_SMTP_USER`, and so on). Because the plugin reads constants first, nothing is stored in the database and nobody can change it from the dashboard. `WPMS_MAIL_FROM_FORCE` makes every plugin send from the configured address, so a form plugin cannot invent a sender outside the domain and break DMARC alignment. Without `SMTP_HOST` the block does nothing. Leave it empty on local copies: a copy of the production database holds real customer addresses.
-
-After setting it up, send a test mail and read the headers: SPF, DKIM and DMARC should all say `pass`.
+Whatever you use, mail must leave through a server that the domain's SPF record authorizes and, ideally, that signs with DKIM. A web server calling PHP's `mail()` with `From: info@example.org` is almost never in that record, so Gmail, Microsoft and others bounce it or send it to spam, and a strict DMARC policy rejects it outright. After setting it up, send a test mail and check that SPF, DKIM and DMARC say `pass` in the headers.
 
 ### Hardening constants
 
@@ -74,9 +68,8 @@ define( 'AUTOMATIC_UPDATER_DISABLED', true ); // no background updates: Composer
 Managed hosts (WP Engine and similar) generate and sometimes rewrite `wp-config.php` and handle the database credentials themselves. Fighting that gets you deploys that overwrite the host's file or are overwritten by it. Instead:
 
 - **Locally**, each developer has their own `wp-config.php`, **git-ignored** (in a Composer project, `src/wp-config.php`, which `composer build` copies into `wordpress/`). Create it with `wp config create --dbname=mysite --dbuser=root`, add the local constants (`WP_ENVIRONMENT_TYPE` = `'local'`, debug flags, `DISALLOW_FILE_MODS`) and nothing from production.
-- **Per environment**, constants that the site needs (API keys, SMTP settings, feature switches) are defined **on each server** with the means the host provides: its environment-variable or config panel, or a small file that exists only on that server and is not in the repository. Check your host's documentation for the supported way; it changes.
+- **Per environment**, constants that the site needs (API keys, mail credentials, feature switches) are defined **on each server** with the means the host provides: its environment-variable or config panel, or a small file that exists only on that server and is not in the repository. Check your host's documentation for the supported way; it changes.
 - **Features stay inert until their constants exist.** Code that needs `MYSITE_SOME_API_KEY` starts with `if ( ! defined( 'MYSITE_SOME_API_KEY' ) ) { return; }`. A new environment, or a developer's laptop, then runs fine without it, and a missing secret turns a feature off instead of producing a fatal error.
-- The same rules for SMTP apply: define the `WPMS_*` constants per environment, and make sure the sending address is authorized by SPF/DKIM/DMARC, as above.
 
 Do not commit the host's `wp-config.php` or any file containing real credentials, even to a private repository: repositories get shared, forked and cloned onto laptops.
 

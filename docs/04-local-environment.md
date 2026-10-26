@@ -41,7 +41,7 @@ composer install        # core, plugins, themes, translations, then `composer bu
 cp .env.example .env    # fill in database credentials and keys; set WP_ENV=local
 ```
 
-Leave `SMTP_HOST` empty in the local `.env`. A copy of the production database contains real customer email addresses, and local should never be able to send to them.
+If the site sends mail, make sure a local copy cannot email real users: a production dump contains real addresses. Leave mail credentials out of the local `.env`, or use a mail catcher.
 
 ## 2. Serve it with Valet
 

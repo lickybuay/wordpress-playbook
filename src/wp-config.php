@@ -148,26 +148,6 @@ define( 'DISALLOW_FILE_EDIT', true );
 define( 'DISALLOW_FILE_MODS', true );
 define( 'AUTOMATIC_UPDATER_DISABLED', true );
 
-// Outgoing mail through the domain's mail provider (WP Mail SMTP). Only when the
-// .env has SMTP_HOST; without it WordPress keeps sending the default way. The
-// plugin reads these constants, so nothing is stored in the database or editable
-// from the dashboard.
-if ( ! empty( $mysite_env['SMTP_HOST'] ) ) {
-	define( 'WPMS_ON', true );
-	define( 'WPMS_MAILER', 'smtp' );
-	define( 'WPMS_SMTP_HOST', $mysite_env['SMTP_HOST'] );
-	define( 'WPMS_SMTP_PORT', (int) ( $mysite_env['SMTP_PORT'] ?? 587 ) );
-	define( 'WPMS_SSL', $mysite_env['SMTP_SECURE'] ?? 'tls' ); // Encryption: tls on port 587, ssl on 465, or empty.
-	define( 'WPMS_SMTP_AUTOTLS', true );
-	define( 'WPMS_SMTP_AUTH', true );
-	define( 'WPMS_SMTP_USER', $mysite_env['SMTP_USER'] ?? '' );
-	define( 'WPMS_SMTP_PASS', $mysite_env['SMTP_PASSWORD'] ?? '' );
-	define( 'WPMS_MAIL_FROM', $mysite_env['SMTP_FROM'] ?? ( $mysite_env['SMTP_USER'] ?? '' ) );
-	define( 'WPMS_MAIL_FROM_FORCE', true );
-	define( 'WPMS_MAIL_FROM_NAME', $mysite_env['SMTP_FROM_NAME'] ?? 'My Site' );
-	define( 'WPMS_MAIL_FROM_NAME_FORCE', true );
-}
-
 // Drop everything we parsed so that a plugin cannot read it from the global scope.
 unset( $mysite_candidates, $mysite_env, $mysite_required, $mysite_missing, $mysite_key, $mysite_is_local );
 

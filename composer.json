@@ -7,8 +7,7 @@
     "php": ">=8.2",
     "roots/wordpress": "7.1.3",
     "composer/installers": "^2",
-    "inpsyde/wp-translation-downloader": "^2.6",
-    "wpackagist-plugin/wp-mail-smtp": "4.10.3"
+    "inpsyde/wp-translation-downloader": "^2.6"
   },
   "require-dev": {
     "brainmaestro/composer-git-hooks": "^3.0",
@@ -66,6 +65,7 @@
   },
   "scripts": {
     "build": [
+      "mkdir -p wordpress/wp-content/plugins wordpress/wp-content/themes wordpress/wp-content/mu-plugins",
       "[ -d src/wp-content ] && cp -R src/wp-content/. wordpress/wp-content/ || true",
       "[ -f src/wp-config.php ] && cp src/wp-config.php wordpress/wp-config.php || true"
     ],

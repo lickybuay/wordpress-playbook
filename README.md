@@ -20,7 +20,7 @@ It is distilled from production work: client sites on a self-managed VPS, market
 | | |
 |---|---|
 | [01 — Project layout](docs/01-project-layout.md) | Composer-managed WordPress, `src/` → `wordpress/` build, private and zipped plugins |
-| [02 — Config and secrets](docs/02-config-and-secrets.md) | A `wp-config.php` without secrets, `.env`, environment types, SMTP |
+| [02 — Config and secrets](docs/02-config-and-secrets.md) | A `wp-config.php` without secrets, `.env`, environment types |
 | [03 — Deploy](docs/03-deploy.md) | A) your own server with a self-hosted GitHub runner · B) WP Engine |
 | [04 — Local environment](docs/04-local-environment.md) | Valet, production dumps, uploads served from production |
 | [05 — Hardening](docs/05-hardening.md) | Uploads allowlist, no dashboard installs, headers, hotlinking |
@@ -52,7 +52,14 @@ src/
   wp-config.php        committed config with no secrets
   wp-content/
     themes/mytheme/    starter theme
-    mu-plugins/        must-use plugins (incl. the local-only uploads redirect)
+    mu-plugins/        must-use plugins: WordPress loads every file here automatically
+      local-uploads-from-production.php
+                       OPTIONAL. Only on your local copy: an image or file that is not
+                       in your local uploads folder loads from production instead, so
+                       you never have to copy gigabytes of uploads. Does nothing on any
+                       server. Set your local host and production URL at the top, or
+                       delete the file if you copy the uploads locally.
+                       See docs/04-local-environment.md.
 manual-plugins/        paid plugin zips, installed as Composer packages
 server/                files that go on the server by hand (uploads/.htaccess allowlist)
 .githooks/             pre-commit: fixes staged PHP to the WordPress standard
