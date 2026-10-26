@@ -40,6 +40,15 @@ cd wordpress && valet link mysite --secure
 wp core install --url=https://mysite.test --title="My site" --admin_user=admin --admin_email=you@example.org
 ```
 
+Or with Docker (optional, no PHP or MySQL needed on your machine):
+
+```bash
+composer install                 # or: docker run --rm -v "$PWD":/app composer:2 install
+cp .env.example .env             # set DB_HOST=db and DB_NAME/DB_USER/DB_PASSWORD=wordpress, salts, WP_ENV=local
+docker compose up -d             # site at http://localhost:8080
+docker compose run --rm wpcli core install --url=http://localhost:8080 --title="My site" --admin_user=admin --admin_email=you@example.org
+```
+
 Details, including importing an existing site instead of a fresh install, are in [04 — Local environment](docs/04-local-environment.md).
 
 ## Layout
@@ -48,6 +57,8 @@ Details, including importing an existing site instead of a fresh install, are in
 composer.json          pinned core, plugins and themes; `composer build` copies src/ into wordpress/
 .env.example           secrets template (the real .env is git-ignored)
 .deployignore          what a deploy never uploads
+docker-compose.yml     OPTIONAL local environment: MariaDB, Apache + PHP, WP-CLI (Valet is the main path)
+docker/                OPTIONAL Apache config used by docker-compose.yml
 src/
   wp-config.php        committed config with no secrets
   wp-content/
@@ -57,7 +68,7 @@ src/
                        OPTIONAL. Only on your local copy: an image or file that is not
                        in your local uploads folder loads from production instead, so
                        you never have to copy gigabytes of uploads. Does nothing on any
-                       server. Set your local host and production URL at the top, or
+                       server. Set your local hosts and production URL at the top, or
                        delete the file if you copy the uploads locally.
                        See docs/04-local-environment.md.
 manual-plugins/        paid plugin zips, installed as Composer packages

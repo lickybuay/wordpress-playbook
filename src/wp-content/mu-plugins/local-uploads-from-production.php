@@ -3,11 +3,11 @@
  * Plugin Name: Local only - uploads from production
  *
  * OPTIONAL. Keep it if you don't copy the uploads folder to your machine; delete
- * this file if you do. Before using it, set MYSITE_LOCAL_HOST and
- * MYSITE_PRODUCTION_ORIGIN below to your local host and production URL.
+ * this file if you do. Before using it, set MYSITE_LOCAL_HOSTS and
+ * MYSITE_PRODUCTION_ORIGIN below to your local hosts and production URL.
  *
  * Description: On a local copy (WP_ENVIRONMENT_TYPE=local) served as
- *              mysite.test, a request for a file under the uploads folder that
+ *              mysite.test (Valet) or localhost:8080 (Docker), a request for a file under the uploads folder that
  *              is not on disk is redirected to the same file on production, so
  *              gigabytes of uploads do not have to be copied locally. Production's
  *              hotlink rule (.htaccess) must allow the local referer.
@@ -26,8 +26,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-// The local host this applies to, and where the real files live.
-const MYSITE_LOCAL_HOST        = 'mysite.test';
+// The local hosts this applies to (HTTP_HOST includes the port), and where the real files live.
+const MYSITE_LOCAL_HOSTS       = array( 'mysite.test', 'localhost:8080' );
 const MYSITE_PRODUCTION_ORIGIN = 'https://www.example.org';
 
 // Public path of the uploads folder. WordPress' default is /wp-content/uploads/.
@@ -44,7 +44,7 @@ function mysite_redirect_missing_upload() {
 	}
 
 	$host = isset( $_SERVER['HTTP_HOST'] ) ? sanitize_text_field( wp_unslash( $_SERVER['HTTP_HOST'] ) ) : '';
-	if ( MYSITE_LOCAL_HOST !== $host ) {
+	if ( ! in_array( $host, MYSITE_LOCAL_HOSTS, true ) ) {
 		return;
 	}
 

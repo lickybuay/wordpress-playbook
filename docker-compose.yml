@@ -1,0 +1,74 @@
+# OPTIONAL local environment with Docker. Valet is the main path (docs/04-local-environment.md).
+#
+#   composer install && cp .env.example .env     # then set the Docker values in .env
+#   docker compose up -d                          # site at http://localhost:8080
+#   docker compose run --rm wpcli core install --url=http://localhost:8080 ...
+#
+# The database credentials below are fixed, local-only values. Your .env must
+# match them: DB_HOST=db, DB_NAME=wordpress, DB_USER=wordpress, DB_PASSWORD=wordpress.
+# Do not use any of this in production.
+#
+# Compose also reads .env for its own variable substitution, which this file does
+# not use. A `$` in a salt then prints harmless "variable is not set" warnings;
+# silence them with: export COMPOSE_DISABLE_ENV_FILE=1
+
+services:
+  db:
+    image: mariadb:11.4
+    environment:
+      MARIADB_DATABASE: wordpress
+      MARIADB_USER: wordpress
+      MARIADB_PASSWORD: wordpress
+      MARIADB_RANDOM_ROOT_PASSWORD: "1"
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      retries: 20
+
+  web:
+    image: wordpress:php8.4-apache
+    ports:
+      - "8080:80"
+    environment:
+      MYSITE_ENV_FILE: /var/www/.env
+    volumes:
+      - ./wordpress:/var/www/html
+      - type: bind
+        source: ./.env
+        target: /var/www/.env
+        read_only: true
+        bind:
+          create_host_path: false
+      - ./docker/apache-wordpress.conf:/etc/apache2/conf-enabled/wordpress.conf:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # WP-CLI, only when asked for: docker compose run --rm wpcli <wp arguments>
+  # e.g. docker compose run --rm wpcli plugin list
+  wpcli:
+    image: wordpress:cli-php8.4
+    entrypoint: ["wp"]
+    profiles: ["tools"]
+    user: "33:33"
+    working_dir: /var/www/html
+    environment:
+      MYSITE_ENV_FILE: /var/www/.env
+      HOME: /tmp
+    volumes:
+      - ./wordpress:/var/www/html
+      - type: bind
+        source: ./.env
+        target: /var/www/.env
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  db-data:

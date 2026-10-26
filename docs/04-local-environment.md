@@ -1,6 +1,6 @@
 # 04 - Local environment
 
-Goal: a local copy of the site that runs the same code as production (from Git), with a copy of the production database, and without copying gigabytes of uploads. macOS with [Laravel Valet](https://laravel.com/docs/valet) is the setup described here; the ideas carry to any local stack.
+Goal: a local copy of the site that runs the same code as production (from Git), with a copy of the production database, and without copying gigabytes of uploads. macOS with [Laravel Valet](https://laravel.com/docs/valet) is the setup described here; [Docker](#optional-docker) is an optional alternative.
 
 Related: [project layout](01-project-layout.md), [config and secrets](02-config-and-secrets.md).
 
@@ -107,9 +107,9 @@ wp user create dev dev@mysite.test --role=administrator --user_pass='<something 
 
 The uploads folder of an active site is often several gigabytes. You do not need it to work on the site; you need the images to show up. The mu-plugin [src/wp-content/mu-plugins/local-uploads-from-production.php](../src/wp-content/mu-plugins/local-uploads-from-production.php) does that: when a request for a file under the uploads path is not on disk, it answers `302` to the same file on production.
 
-It is already in the starter. Set the three constants at the top (local host, production origin, uploads path; WordPress' default path is `/wp-content/uploads/`). Details worth knowing:
+It is already in the starter. Set the three constants at the top (local hosts, production origin, uploads path; WordPress' default path is `/wp-content/uploads/`). Details worth knowing:
 
-- **Gated twice.** It runs only if `wp_get_environment_type()` is `local` ([config](02-config-and-secrets.md#environment-type)) **and** the request host is the local one. Production never defines `local`, so the file can be committed and deployed with everything else and does nothing there.
+- **Gated twice.** It runs only if `wp_get_environment_type()` is `local` ([config](02-config-and-secrets.md#environment-type)) **and** the request host is one of the local hosts (`mysite.test` for Valet, `localhost:8080` for Docker; the host includes the port). Production never defines `local`, so the file can be committed and deployed with everything else and does nothing there.
 - **Why Valet runs it.** For a missing static file Valet falls through to WordPress' `index.php`, which loads must-use plugins first, so the redirect fires before WordPress does any real work.
 - **`Cache-Control: public, max-age=86400`** on the redirect: the browser reuses it for a day instead of asking WordPress again for every image. If you later add a file locally, a hard refresh gets past the cached redirect.
 - **Path checks.** It refuses paths containing `..`, and only ever redirects to the fixed production origin.
@@ -127,6 +127,38 @@ RewriteRule \.(jpe?g|png|gif|webp|svg)$ - [F,NC]
 ```
 
 The third line is the one to add. Because it lists only a `.test` name that nobody outside developers' laptops can serve, it does not open a real hole.
+
+## Optional: Docker
+
+Valet is the main path. Choose Docker when you have no PHP or MySQL on the host, or you are on Linux or Windows. [docker-compose.yml](../docker-compose.yml) runs MariaDB, Apache with PHP 8.4 and, on request, WP-CLI. The site is served from the same `wordpress/` folder that `composer install` builds, so code changes show up immediately.
+
+```bash
+composer install                  # or: docker run --rm -v "$PWD":/app composer:2 install
+cp .env.example .env              # then set the Docker values below, fresh salts and WP_ENV=local
+docker compose up -d              # site at http://localhost:8080
+docker compose run --rm wpcli core install --url=http://localhost:8080 --title="My Site" \
+  --admin_user=dev --admin_email=dev@mysite.test --admin_password='<something local>'
+docker compose run --rm wpcli theme activate mytheme
+```
+
+The database credentials are fixed, local-only values in `docker-compose.yml`, so the `.env` must match them: `DB_HOST=db`, `DB_NAME=wordpress`, `DB_USER=wordpress`, `DB_PASSWORD=wordpress`. The `.env` is mounted read-only into the containers and found through `MYSITE_ENV_FILE` (see [config](02-config-and-secrets.md#where-it-looks-for-the-file)). WP-CLI sits behind the `tools` profile, so `docker compose up` does not start it; `docker compose run --rm wpcli <wp arguments>` does the same as `wp <wp arguments>` on the host.
+
+To work on an existing site, stream the production dump straight into the database (no file on disk) and rewrite the URLs:
+
+```bash
+ssh siteuser@example.org "wp --path=/home/siteuser/public_html db export - --single-transaction" \
+  | docker compose run --rm -T wpcli db import -
+docker compose run --rm wpcli search-replace 'https://www.example.org' 'http://localhost:8080' --all-tables --skip-columns=guid
+docker compose run --rm wpcli search-replace 'http://www.example.org' 'http://localhost:8080' --all-tables --skip-columns=guid
+```
+
+Notes:
+
+- **Uploads.** The [uploads redirect](#uploads-do-not-copy-them) already lists `localhost:8080` as a local host. Production's hotlink rule must allow that referer too: add a `RewriteCond %{HTTP_REFERER} !^https?://localhost:8080 [NC]` line next to the one for `mysite.test`.
+- **Rewrite rules** live in `docker/apache-wordpress.conf`, inside the container's Apache config, not in `wordpress/.htaccess`: the self-hosted deploy uploads the top-level files of `wordpress/` and would overwrite production's `.htaccess`.
+- **Linux file permissions.** The files in `wordpress/` belong to your user, while Apache and WP-CLI run as `www-data` (uid 33), which then cannot write uploads. Locally only: `chmod -R a+rwX wordpress/wp-content/uploads`.
+- **Compose warnings.** Compose also reads `.env` for its own variable substitution, which `docker-compose.yml` does not use. A `$` in a salt prints "variable is not set" warnings; they are harmless, and `export COMPOSE_DISABLE_ENV_FILE=1` silences them.
+- **Stop** with `docker compose down`. Add `-v` to also delete the database volume.
 
 ## Clean up
 
