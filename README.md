@@ -22,7 +22,7 @@ It is distilled from production work: client sites on a self-managed VPS, market
 | [01 — Project layout](docs/01-project-layout.md) | Composer-managed WordPress, `src/` → `wordpress/` build, private and zipped plugins |
 | [02 — Config and secrets](docs/02-config-and-secrets.md) | A `wp-config.php` without secrets, `.env`, environment types |
 | [03 — Deploy](docs/03-deploy.md) | A) your own server with a self-hosted GitHub runner · B) WP Engine |
-| [04 — Local environment](docs/04-local-environment.md) | Valet, production dumps, uploads served from production |
+| [04 — Local environment](docs/04-local-environment.md) | Valet or Docker, production dumps, uploads served from production |
 | [05 — Hardening](docs/05-hardening.md) | Uploads allowlist, no dashboard installs, headers, hotlinking |
 | [06 — Performance](docs/06-performance.md) | Cache-busting by content hash, cached and paginated AJAX fragments |
 | [07 — Testing and quality](docs/07-testing-and-quality.md) | Pre-commit fixer, PR lint, WP-CLI test harness, smoke tests, AI review |
@@ -30,6 +30,8 @@ It is distilled from production work: client sites on a self-managed VPS, market
 | [09 — Working method](docs/09-working-method.md) | Explore → plan → go → implement → verify → report, and the agent roles |
 
 ## Quick start
+
+With Valet (macOS):
 
 ```bash
 git clone https://github.com/lickybuay/wordpress-playbook.git mysite && cd mysite
@@ -40,7 +42,7 @@ cd wordpress && valet link mysite --secure
 wp core install --url=https://mysite.test --title="My site" --admin_user=admin --admin_email=you@example.org
 ```
 
-Or with Docker (optional, no PHP or MySQL needed on your machine):
+With Docker (any OS, no PHP or MySQL needed on your machine):
 
 ```bash
 composer install                 # or: docker run --rm -v "$PWD":/app composer:2 install
@@ -49,7 +51,7 @@ docker compose up -d             # site at http://localhost:8080
 docker compose run --rm wpcli core install --url=http://localhost:8080 --title="My site" --admin_user=admin --admin_email=you@example.org
 ```
 
-Details, including importing an existing site instead of a fresh install, are in [04 — Local environment](docs/04-local-environment.md).
+Pick one. Details, including importing an existing site instead of a fresh install, are in [04 — Local environment](docs/04-local-environment.md).
 
 ## Layout
 
