@@ -1,0 +1,89 @@
+# uploads.htaccess
+#
+# What it is: an ALLOWLIST for wp-content/uploads. Everything is denied; only
+# the file types a media library legitimately holds are served. A .php file, a
+# shell script or an unknown binary dropped here (by a vulnerable plugin, a
+# leaked SFTP account, a bad import) is never served and never executed.
+#
+# How to adopt: the uploads directory is not in git (uploads never are), so this
+# file is copied there by your provisioning or deploy step:
+#
+#   install -m 644 server/uploads.htaccess /home/siteuser/public_html/wp-content/uploads/.htaccess
+#
+# Then verify it from outside, see docs/05-hardening.md ("Verify from outside").
+# Requires Apache 2.4 with AllowOverride FileInfo Options AuthConfig (or All).
+#
+# THIS FILE IS THE SECOND LAYER, NOT THE FIRST. The primary control is a deny
+# rule in the web server's own config (vhost), which no one can edit from the
+# uploads folder and which does not depend on how PHP is wired. See
+# docs/05-hardening.md ("The uploads folder is an allowlist") for the Apache
+# <LocationMatch> block and the nginx location to use. Use this file in
+# addition, and alone only where you cannot touch the vhost (shared hosting).
+#
+# Whether Apache even reads this file depends on how PHP is attached:
+#   - mod_php: yes. `php_flag engine off` below turns the engine off here.
+#   - php-fpm via  <FilesMatch \.php$> SetHandler "proxy:unix:...|fcgi://localhost"
+#     in the vhost: yes. The request is mapped to a file first, so the
+#     Require rules below refuse a .php before it reaches FPM.
+#   - php-fpm via  ProxyPassMatch ^/(.*\.php)$ fcgi://...  : NO. Apache proxies
+#     by URL, never maps the path to the filesystem, and never looks for this
+#     file, so an uploaded .php would run. Only a vhost-level <LocationMatch>
+#     deny protects that setup.
+# Never assume. Run the probe in docs/05-hardening.md ("Verify from outside").
+
+# 1. Directory listing and CGI are never wanted here.
+Options -Indexes -ExecCGI
+
+# 2. Remove every script handler that could be inherited from a parent config,
+#    and force "no handler" so a file is only ever served as a static file.
+<IfModule mod_mime.c>
+  RemoveHandler .php .phtml .php3 .php4 .php5 .php7 .php8 .pht .phar .phps .cgi .pl .py .sh
+  RemoveType    .php .phtml .php3 .php4 .php5 .php7 .php8 .pht .phar .phps
+</IfModule>
+<IfModule mod_handlers.c>
+  SetHandler default-handler
+</IfModule>
+
+# 3. mod_php only: switch the PHP engine off for this directory.
+#    (mod_php.c is PHP 8, mod_php7.c is PHP 7; php-fpm ignores both blocks.)
+<IfModule mod_php.c>
+  php_flag engine off
+</IfModule>
+<IfModule mod_php7.c>
+  php_flag engine off
+</IfModule>
+
+# 4. Deny everything by default.
+<IfModule mod_authz_core.c>
+  Require all denied
+</IfModule>
+
+# 5. Allow only the file types a media library needs.
+#    Add an extension here only when you have a real use for it.
+<FilesMatch "(?i)\.(jpe?g|png|gif|webp|avif|ico|svg|pdf|docx?|xlsx?|pptx?|odt|ods|odp|rtf|txt|csv|mp3|m4a|ogg|wav|mp4|m4v|mov|webm|zip)$">
+  <IfModule mod_authz_core.c>
+    Require all granted
+  </IfModule>
+</FilesMatch>
+
+# 6. Double extensions ("shell.php.jpg") match the allowlist above because the
+#    name ends in .jpg, and some server configs execute on ANY .php in the name.
+#    This block comes later, so it wins: any script-looking extension anywhere
+#    in the file name is refused.
+<FilesMatch "(?i)\.(php[0-9]*|phtml|pht|phar|phps|cgi|pl|py|sh|asp|aspx|jsp)(\.|$)">
+  <IfModule mod_authz_core.c>
+    Require all denied
+  </IfModule>
+</FilesMatch>
+
+# 7. Never let a browser guess a different type than the one we send.
+<IfModule mod_headers.c>
+  Header always set X-Content-Type-Options "nosniff"
+
+  # SVG is XML and can carry <script>. Served from a user-controlled folder it
+  # is a stored-XSS vector, so it gets a locked-down policy: it still renders
+  # as an <img>, but no script runs if someone opens the file URL directly.
+  <FilesMatch "(?i)\.svg$">
+    Header always set Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+  </FilesMatch>
+</IfModule>

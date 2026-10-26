@@ -1,0 +1,177 @@
+# Deploy to your own VPS from a self-hosted GitHub runner.
+#
+# OFF BY DEFAULT. Every job is skipped until the repository variable
+# DEPLOY_TARGET is set to `self-hosted` (Settings, Secrets and variables,
+# Actions, Variables). While it is unset, no runner is needed and no secret is read.
+#
+# What it does
+#   The whole deploy as one workflow: build with Composer, check the build,
+#   dry run (always), rsync the code directories into the docroot, then run the
+#   post-deploy WP-CLI steps. See docs/03-deploy.md, "Variant A".
+#
+# How to turn it on
+#   1. Do the one-time server setup in docs/03-deploy.md (runner user, sudo
+#      rule, build dir, `production` environment).
+#   2. Set DEPLOY_TARGET = self-hosted.
+#   3. Run this workflow by hand with dry_run ticked and read the summary.
+#   4. Set DEPLOY_ENABLED = true. This is the LAST step: until it is `true`, a
+#      push to main does nothing (only a manual dry run runs). Set it to
+#      anything else to stop all deploys.
+#   Adjust SITE_USER, DOCROOT, the runner label and the "Check the build" step
+#   to your project.
+#
+# Layout it builds (see docs/01-project-layout.md)
+#   composer install --no-dev produces ./wordpress (core, plugins, and
+#   wp-content / wp-config.php copied from ./src). Your own PHP is under ./src.
+#   php, composer, rsync and WP-CLI must be installed on the server.
+#
+# Required settings in GitHub
+#   - Environment `production`, with deployment branches restricted to `main`.
+#   - Repository variables DEPLOY_TARGET and DEPLOY_ENABLED, as above.
+#
+# Triggers are push to main and workflow_dispatch only; never pull_request or
+# pull_request_target, so a fork cannot reach the runner.
+#
+# WARNING: never register a self-hosted runner on a public repository. Anyone
+# who can open a pull request or push a branch could run code on your server.
+# Use this workflow only on a PRIVATE repository, and keep collaborators to
+# people you would give a shell to.
+
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Only show what would change, deploy nothing
+        type: boolean
+        default: true
+
+defaults:
+  run:
+    shell: bash -leo pipefail {0}
+
+# One deploy at a time. A deploy is never cancelled halfway; a newer one waits.
+concurrency:
+  group: site-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    # DEPLOY_TARGET is the master switch for this file (off when unset).
+    # DEPLOY_ENABLED is set as the LAST step of the server setup. Until then a
+    # push does nothing, even if the runner is online. A manual dry run is
+    # always allowed: it changes nothing.
+    if: >-
+      vars.DEPLOY_TARGET == 'self-hosted' &&
+      github.ref == 'refs/heads/main' && (
+        vars.DEPLOY_ENABLED == 'true' ||
+        (github.event_name == 'workflow_dispatch' && inputs.dry_run)
+      )
+    runs-on: [self-hosted, site-prod]
+    timeout-minutes: 20
+    environment: production
+    env:
+      SITE_USER: siteuser
+      DOCROOT: /home/siteuser/public_html
+      # Pushes always deploy; only a manual run can stop after the dry run.
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+
+    steps:
+      - name: Checkout
+        # actions/checkout v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # The token is not needed after the checkout; do not leave it on disk.
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: |
+          if ! command -v composer > /dev/null; then
+            echo "::error::composer is not installed for the runner user (see docs/03-deploy.md)"
+            exit 1
+          fi
+          # Build once, here, without dev dependencies. The server never runs Composer.
+          composer install --no-dev --prefer-dist --no-interaction --no-progress --optimize-autoloader
+          # rsync runs as the site user, which has to be able to read the build.
+          chmod -R o+rX wordpress
+
+      - name: Check the build
+        run: |
+          # Fail early on a half-built tree. Add the files your site cannot live without.
+          test -f wordpress/wp-includes/version.php
+          test -f wordpress/wp-config.php
+          test -f wordpress/wp-content/themes/mytheme/style.css
+          lint() { out=$(php -l "$1" 2>&1) || { echo "$out"; exit 1; }; }
+          while IFS= read -r -d '' file; do
+            lint "$file"
+          done < <(find src -type f -name '*.php' -print0)
+          lint wordpress/wp-config.php
+          echo "Build looks complete and every PHP file lints."
+
+      # The dry run and the real deploy run the same function, so what the dry
+      # run shows is what the deploy does. It is written to a file here and
+      # sourced by the next two steps. Only the directories and files listed in
+      # it are ever written or deleted: everything else in the docroot (uploads,
+      # .htaccess, .user.ini, .well-known, security-plugin files, cache drop-ins,
+      # wp-content/{cache,upgrade,...}) is never given to rsync.
+      - name: Define the sync
+        run: |
+          cat > "$RUNNER_TEMP/sync-site.sh" <<'SYNC'
+          # $DRY is empty for the real run and (-n --itemize-changes) for the dry run.
+          sync_site() {
+            # The docroot must exist and look like the site.
+            sudo -u "$SITE_USER" /usr/bin/rsync --list-only "$DOCROOT/index.php" > /dev/null
+
+            # Mirrored, deleting what is not in the build. Anything installed
+            # there outside Git is removed on the next deploy.
+            for dir in wp-admin wp-includes wp-content/plugins wp-content/themes wp-content/mu-plugins wp-content/languages; do
+              echo "== $dir/"
+              sudo -u "$SITE_USER" /usr/bin/rsync -rlpt --checksum --chmod=D755,F644 --delete-after --delay-updates \
+                "${DRY[@]}" "wordpress/$dir/" "$DOCROOT/$dir/"
+            done
+
+            # Top-level files: added or updated, never deleted. readme.html is
+            # skipped: it exposes the WordPress version. wp-config.php is
+            # group-readable only.
+            echo "== root files"
+            mapfile -d '' root_files < <(find wordpress -maxdepth 1 -type f ! -name readme.html ! -name wp-config.php -print0)
+            sudo -u "$SITE_USER" /usr/bin/rsync -lpt --checksum --chmod=F644 "${DRY[@]}" "${root_files[@]}" "$DOCROOT/"
+            sudo -u "$SITE_USER" /usr/bin/rsync -lpt --checksum --chmod=F640 "${DRY[@]}" wordpress/wp-config.php "$DOCROOT/"
+          }
+          SYNC
+
+      - name: Dry run
+        run: |
+          source "$RUNNER_TEMP/sync-site.sh"
+          DRY=(-n --itemize-changes)
+          sync_site | tee "$RUNNER_TEMP/dry-run.txt"
+          {
+            echo '### Dry run: nothing was changed'
+            echo '```'
+            # The summary has a size limit; cut very long lists.
+            head -c 900000 "$RUNNER_TEMP/dry-run.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Deploy
+        if: env.DRY_RUN != 'true'
+        run: |
+          source "$RUNNER_TEMP/sync-site.sh"
+          DRY=()
+          sync_site
+
+      - name: Update database and caches
+        if: env.DRY_RUN != 'true'
+        run: |
+          sudo -u "$SITE_USER" -H /usr/local/bin/wp --path="$DOCROOT" core update-db
+          sudo -u "$SITE_USER" -H /usr/local/bin/wp --path="$DOCROOT" cache flush
+          # Page cache: this example calls WP Super Cache. Replace it with the
+          # equivalent for your cache plugin, or remove it if you have none.
+          sudo -u "$SITE_USER" -H /usr/local/bin/wp --path="$DOCROOT" eval 'if (function_exists("wp_cache_clear_cache")) { wp_cache_clear_cache(); }'

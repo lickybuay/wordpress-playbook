@@ -1,0 +1,342 @@
+# Deploy wp-content to WP Engine over the SSH Gateway.
+#
+# OFF BY DEFAULT. Every job is skipped until the repository variable
+# DEPLOY_TARGET is set to `wpengine` (Settings, Secrets and variables,
+# Actions, Variables). While it is unset, no secret is read.
+#
+# What it does
+#   A self-contained pipeline on GitHub-hosted runners: build with Composer,
+#   check the build, dry run (always), rsync plugins / themes / mu-plugins to the
+#   chosen WP Engine environment, purge caches, tag production releases.
+#   See docs/03-deploy.md, "Variant B".
+#
+# Why plain rsync and not the official WP Engine action
+#   The official action (wpengine/github-action-wpe-site-deploy) takes one source
+#   and one destination per call and has no dry-run or itemized-changes mode.
+#   We need several directories, "additive" ones that are never deleted from,
+#   a dry run whose output lands in the job summary, and a production tag.
+#   That is simple with rsync over SSH and easy to read, so we do it directly
+#   and have no third-party deploy code in the path to production.
+#
+# How to turn it on
+#   1. Create the GitHub environments `staging` and `production` (Settings,
+#      Environments) and put the secrets and variables below IN THEM, not at
+#      repository level. For `production`, set "Deployment branches" to `main`
+#      only, and add required reviewers if you want a second pair of eyes on
+#      every release. That branch rule is the control that keeps production
+#      credentials away from other branches; see "Why environments" below.
+#   2. Set the repository variable DEPLOY_TARGET = wpengine.
+#   3. Adjust BUILD_DIR below if your Composer build puts wp-content elsewhere.
+#      The default matches this repository: composer install produces
+#      ./wordpress with src/wp-content copied in. .deployignore (repo root)
+#      lists what rsync never sends or deletes.
+#
+# Routing
+#   push to main            -> staging (automatic)
+#   Run workflow, staging   -> staging
+#   Run workflow, production-> production, only from main, manual only
+#   (optional) push to dev/** -> development: uncomment the `dev/**` branch
+#   below and create a `development` environment with the same secrets/variables.
+#
+# Triggers are push and workflow_dispatch only; never pull_request or
+# pull_request_target.
+#
+# Why environments
+#   A workflow_dispatch from any branch runs THAT branch's copy of this file, so
+#   a check written inside the file ("only from main") can be edited away by
+#   whoever can push a branch. Likewise a repository-level secret is readable by
+#   a workflow on any branch. Environment secrets are only released to a job
+#   that targets the environment, and the environment's "Deployment branches"
+#   rule is enforced by GitHub, outside the file. So: production credentials go
+#   in the `production` environment, restricted to `main`. The main check in
+#   the first step below is defense in depth, not the control.
+#
+# Environment secrets and variables (set them in EACH environment)
+#   secret WPE_SSHG_KEY_PRIVATE  private ed25519 key of a deploy user; its public
+#                                key is added in the WP Engine User Portal. Use a
+#                                different key per environment, and for staging a
+#                                WP Engine user that can only reach staging
+#                                installs (keys apply to every install their user
+#                                can access).
+#   var    WPE_INSTALL           install name, as shown in the User Portal
+#   var    WPE_SSH_KNOWN_HOSTS   pinned host key of that install's gateway
+#                                (INSTALL.ssh.wpengine.net). The deploy fails
+#                                without it; nothing is fetched at deploy time.
+#                                Get it once, from a machine you trust:
+#                                  ssh-keyscan -t ed25519 INSTALL.ssh.wpengine.net
+#                                and compare its fingerprint
+#                                  (ssh-keygen -lf <file>)
+#                                with the one WP Engine publishes or gives you
+#                                through support, before pasting the line.
+#
+# Optional secrets (repository or environment level)
+#   COMPOSER_AUTH_JSON    Composer auth as JSON, for private packages (read-only
+#                         tokens). Leave it unset if you have none.
+#   SLACK_WEBHOOK_URL     Slack incoming webhook. No secret, no message.
+#
+# Repository variable
+#   DEPLOY_TARGET = wpengine
+#
+# WP Engine owns WordPress core, wp-config.php, the host mu-plugins and the
+# server config. This workflow never sends them.
+
+name: Deploy to WP Engine
+
+on:
+  push:
+    branches:
+      - main
+      # - 'dev/**'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Where to deploy
+        type: choice
+        options:
+          - staging
+          - production
+        default: staging
+      dry_run:
+        description: Only list what would change, deploy nothing
+        type: boolean
+        default: true
+
+defaults:
+  run:
+    shell: bash
+
+# One deploy per environment at a time. A deploy is never cancelled halfway.
+concurrency:
+  group: wpengine-${{ inputs.environment || (github.ref == 'refs/heads/main' && 'staging' || 'development') }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    if: vars.DEPLOY_TARGET == 'wpengine'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # The environment name drives GitHub's protection rules (reviewers, branches).
+    environment: ${{ inputs.environment || (github.ref == 'refs/heads/main' && 'staging' || 'development') }}
+    outputs:
+      target: ${{ steps.target.outputs.name }}
+      deployed: ${{ steps.flags.outputs.deployed }}
+    env:
+      # Where Composer puts the finished wp-content in the checkout.
+      BUILD_DIR: wordpress/wp-content
+      # Mirrored: files missing from the build are deleted on the server.
+      MIRRORED_PATHS: plugins themes
+      # Additive: files are added and updated, never deleted. Use it for
+      # directories where the host puts its own files (WP Engine does in mu-plugins).
+      ADDITIVE_PATHS: mu-plugins
+      # Pushes always deploy; only a manual run can stop after the dry run.
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+    steps:
+      - name: Pick the target
+        id: target
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_ENV: ${{ inputs.environment }}
+          REF: ${{ github.ref }}
+          # Comes from the job's environment (staging / production / ...).
+          INSTALL: ${{ vars.WPE_INSTALL }}
+        run: |
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            name="$INPUT_ENV"
+          elif [ "$REF" = "refs/heads/main" ]; then
+            name=staging
+          else
+            name=development
+          fi
+
+          # Production is manual and only from main. This check lives in the file
+          # a branch can edit, so it is NOT the control: the `production`
+          # environment's deployment-branch rule is (see the header).
+          if [ "$name" = "production" ] && [ "$REF" != "refs/heads/main" ]; then
+            echo "::error::Production deploys only run from main"
+            exit 1
+          fi
+
+          case "$name" in
+            staging|production|development) ;;
+            *) echo "::error::Unknown environment: $name"; exit 1 ;;
+          esac
+
+          # Install names are lowercase letters and digits. Refuse anything else
+          # before it gets near a shell command or a host name.
+          install="$INSTALL"
+          if ! [[ "$install" =~ ^[a-z0-9]+$ ]]; then
+            echo "::error::The WPE_INSTALL variable of the '$name' environment is missing or not a valid install name"
+            exit 1
+          fi
+
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "install=$install" >> "$GITHUB_OUTPUT"
+          echo "Deploying to $name ($install)"
+
+      - name: Checkout
+        # actions/checkout v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Set up PHP
+        # shivammathur/setup-php 2.40.0
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962
+        with:
+          php-version: '8.3'
+          tools: composer:v2
+
+      - name: Install dependencies
+        env:
+          # Composer reads this variable for private packages. Empty is fine.
+          COMPOSER_AUTH: ${{ secrets.COMPOSER_AUTH_JSON }}
+        run: composer install --no-dev --prefer-dist --no-interaction --no-progress --optimize-autoloader
+
+      - name: Check the build
+        run: |
+          test -d "$BUILD_DIR"
+          for dir in $MIRRORED_PATHS $ADDITIVE_PATHS; do
+            test -d "$BUILD_DIR/$dir" || { echo "::error::$BUILD_DIR/$dir is missing from the build"; exit 1; }
+          done
+          test -f .deployignore
+          lint() { out=$(php -l "$1" 2>&1) || { echo "$out"; exit 1; }; }
+          if [ -d src ]; then
+            while IFS= read -r -d '' file; do
+              lint "$file"
+            done < <(find src -type f -name '*.php' -print0)
+          fi
+          echo "Build looks complete and our PHP files lint."
+
+      - name: Set up SSH
+        env:
+          INSTALL: ${{ steps.target.outputs.install }}
+          SSHG_KEY: ${{ secrets.WPE_SSHG_KEY_PRIVATE }}
+          KNOWN_HOSTS: ${{ vars.WPE_SSH_KNOWN_HOSTS }}
+          TARGET: ${{ steps.target.outputs.name }}
+        run: |
+          if [ -z "$SSHG_KEY" ]; then
+            echo "::error::The WPE_SSHG_KEY_PRIVATE secret is not set in the '$TARGET' environment"
+            exit 1
+          fi
+          if [ -z "$KNOWN_HOSTS" ]; then
+            echo "::error::The WPE_SSH_KNOWN_HOSTS variable is not set in the '$TARGET' environment. Pin the gateway host key (see the workflow header); this workflow never fetches it at deploy time."
+            exit 1
+          fi
+          # Accept only a plain (not hashed) line for this install's gateway.
+          if ! printf '%s\n' "$KNOWN_HOSTS" | grep -q "^$INSTALL\.ssh\.wpengine\.net "; then
+            echo "::error::WPE_SSH_KNOWN_HOSTS has no plain entry for $INSTALL.ssh.wpengine.net"
+            exit 1
+          fi
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSHG_KEY" > ~/.ssh/wpe_key
+          chmod 600 ~/.ssh/wpe_key
+          # Pinned host key, from the environment variable. ssh runs with
+          # StrictHostKeyChecking=yes, so a different key fails the deploy.
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      # The dry run and the real deploy run the same function, so what the dry
+      # run shows is what the deploy does. Only the directories listed in
+      # MIRRORED_PATHS and ADDITIVE_PATHS are touched; core, wp-config.php and
+      # uploads are never given to rsync. Files matched by .deployignore are
+      # neither sent nor deleted.
+      - name: Define the sync
+        run: |
+          cat > "$RUNNER_TEMP/sync-site.sh" <<'SYNC'
+          # $DRY is empty for the real run and (-n --itemize-changes) for the dry run.
+          sync_site() {
+            local remote="$INSTALL@$INSTALL.ssh.wpengine.net:/sites/$INSTALL/wp-content"
+            local ssh_cmd="ssh -i $HOME/.ssh/wpe_key -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o StrictHostKeyChecking=yes"
+            local common=(-rlptz --checksum --chmod=D755,F644 --exclude-from=.deployignore -e "$ssh_cmd")
+
+            for dir in $MIRRORED_PATHS; do
+              echo "== $dir/ (mirrored)"
+              rsync "${common[@]}" --delete-after "${DRY[@]}" "$BUILD_DIR/$dir/" "$remote/$dir/"
+            done
+            for dir in $ADDITIVE_PATHS; do
+              echo "== $dir/ (additive, nothing is deleted)"
+              rsync "${common[@]}" "${DRY[@]}" "$BUILD_DIR/$dir/" "$remote/$dir/"
+            done
+          }
+          SYNC
+
+      - name: Dry run
+        env:
+          INSTALL: ${{ steps.target.outputs.install }}
+          TARGET: ${{ steps.target.outputs.name }}
+        run: |
+          source "$RUNNER_TEMP/sync-site.sh"
+          DRY=(--dry-run --itemize-changes)
+          sync_site 2>&1 | tee "$RUNNER_TEMP/dry-run.txt"
+          {
+            echo "### Dry run for $TARGET ($INSTALL): nothing was changed"
+            echo '```'
+            # The summary has a size limit; cut very long lists.
+            head -c 900000 "$RUNNER_TEMP/dry-run.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Deploy
+        if: env.DRY_RUN != 'true'
+        env:
+          INSTALL: ${{ steps.target.outputs.install }}
+        run: |
+          source "$RUNNER_TEMP/sync-site.sh"
+          DRY=()
+          sync_site
+
+      - name: Mark as deployed
+        id: flags
+        if: env.DRY_RUN != 'true'
+        run: echo "deployed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Purge caches
+        if: env.DRY_RUN != 'true'
+        env:
+          INSTALL: ${{ steps.target.outputs.install }}
+        run: |
+          # WP Engine's WP-CLI commands for page and CDN cache. A failed purge
+          # does not undo the deploy, so it only warns. Check the commands
+          # against your plan in the WP Engine docs.
+          ssh -i "$HOME/.ssh/wpe_key" -o IdentitiesOnly=yes -o UserKnownHostsFile="$HOME/.ssh/known_hosts" -o StrictHostKeyChecking=yes \
+            "$INSTALL@$INSTALL.ssh.wpengine.net" \
+            "cd /sites/$INSTALL && wp page-cache flush && wp cdn-cache flush" \
+            || echo "::warning::Cache purge failed; purge it from the User Portal"
+
+      - name: Remove the SSH key
+        if: always()
+        run: rm -f ~/.ssh/wpe_key
+
+      - name: Notify
+        if: always() && env.SLACK_WEBHOOK_URL != '' && env.DRY_RUN != 'true'
+        env:
+          TARGET: ${{ steps.target.outputs.name }}
+          RESULT: ${{ job.status }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          text="Deploy to $TARGET: $RESULT ($GITHUB_REPOSITORY @ ${GITHUB_SHA::7}) $RUN_URL"
+          jq -n --arg text "$text" '{text: $text}' \
+            | curl -fsS -X POST -H 'Content-Type: application/json' --data @- "$SLACK_WEBHOOK_URL" > /dev/null \
+            || echo "::warning::Could not send the notification"
+
+  # Separate job so only it gets write access, and only after production deployed.
+  tag:
+    needs: deploy
+    if: vars.DEPLOY_TARGET == 'wpengine' && needs.deploy.outputs.target == 'production' && needs.deploy.outputs.deployed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Tag the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="production-$(date -u +%Y%m%d-%H%M%S)"
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/tags/$tag" -f sha="$GITHUB_SHA" > /dev/null
+          echo "Tagged $GITHUB_SHA as $tag"

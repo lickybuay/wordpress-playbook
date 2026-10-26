@@ -1,0 +1,84 @@
+{
+  "name": "your-org/your-site",
+  "description": "WordPress codebase for example.org, managed with Composer",
+  "type": "project",
+  "license": "proprietary",
+  "require": {
+    "php": ">=8.2",
+    "roots/wordpress": "7.1.3",
+    "composer/installers": "^2",
+    "inpsyde/wp-translation-downloader": "^2.6",
+    "wpackagist-plugin/wp-mail-smtp": "4.10.3"
+  },
+  "require-dev": {
+    "brainmaestro/composer-git-hooks": "^3.0",
+    "dealerdirect/phpcodesniffer-composer-installer": "^1.0",
+    "wp-coding-standards/wpcs": "^3.0"
+  },
+  "repositories": {
+    "wpackagist": {
+      "type": "composer",
+      "url": "https://wpackagist.org",
+      "only": [
+        "wpackagist-plugin/*",
+        "wpackagist-theme/*"
+      ]
+    }
+  },
+  "config": {
+    "platform": {
+      "php": "8.4.0"
+    },
+    "allow-plugins": {
+      "composer/installers": true,
+      "roots/wordpress-core-installer": true,
+      "inpsyde/wp-translation-downloader": true,
+      "dealerdirect/phpcodesniffer-composer-installer": true
+    }
+  },
+  "extra": {
+    "wordpress-install-dir": "wordpress",
+    "installer-paths": {
+      "wordpress/wp-content/plugins/{$name}/": [
+        "type:wordpress-plugin"
+      ],
+      "wordpress/wp-content/mu-plugins/{$name}/": [
+        "type:wordpress-muplugin"
+      ],
+      "wordpress/wp-content/themes/{$name}/": [
+        "type:wordpress-theme"
+      ]
+    },
+    "wp-translation-downloader": {
+      "languages": [
+        "es_ES"
+      ],
+      "languageRootDir": "wordpress/wp-content/languages"
+    },
+    "hooks": {
+      "config": {
+        "stop-on-failure": [
+          "pre-commit"
+        ]
+      },
+      "pre-commit": "bash .githooks/pre-commit.sh"
+    }
+  },
+  "scripts": {
+    "build": [
+      "[ -d src/wp-content ] && cp -R src/wp-content/. wordpress/wp-content/ || true",
+      "[ -f src/wp-config.php ] && cp src/wp-config.php wordpress/wp-config.php || true"
+    ],
+    "install-hooks": [
+      "[ ! -x vendor/bin/cghooks ] || [ ! -d .git ] || vendor/bin/cghooks add --ignore-lock"
+    ],
+    "post-install-cmd": [
+      "@build",
+      "@install-hooks"
+    ],
+    "post-update-cmd": [
+      "@build",
+      "@install-hooks"
+    ]
+  }
+}

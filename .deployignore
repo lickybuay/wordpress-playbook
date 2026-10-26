@@ -1,0 +1,28 @@
+# Files and folders rsync must never send to (or delete from) a managed host.
+# Used with: rsync --exclude-from=.deployignore
+# One pattern per line, rsync syntax. Paths without a leading slash match at any depth.
+# See docs/03-deploy.md, "Variant B".
+
+# Repository and editor files
+.git/
+.github/
+.githooks/
+.vscode/
+.idea/
+.DS_Store
+.gitignore
+.gitattributes
+
+# Tests and tooling that have no business on a server
+node_modules/
+tests/
+phpunit.xml*
+.phpcs.xml*
+*.log
+
+# Content managed from WP Admin or by the host. Never send, never delete.
+uploads/
+upgrade/
+cache/
+object-cache.php
+advanced-cache.php
